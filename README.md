@@ -40,11 +40,11 @@ node proxy-server.js --udp-min=6811 --udp-max=6922 --udp-rotate=5
 | 核心设计     |
 | 功能      | 实现 |
 |    :----:     |    :----:   |
-|IPv4/IPv6 双栈	| 监听地址支持 127.0.0.1 / 0.0.0.0 / :: / ::1，自动适配 |
-|HTTP 代理	    | 支持普通 HTTP（PIPE 转发）和 HTTPS（CONNECT 隧道），出口连接系统随机分配端口 |
-|SOCKS5 TCP	    | 完整握手，支持 IPv4/IPv6/域名三种地址类型，自动 DNS 解析 |
-|SOCKS5 UDP	    | 创建中继 socket 接收客户端 UDP 包，每发送 5 个包后重新绑定新端口（在 6811-6922 范围内随机选取），旧 socket 立即关闭 |
-|TCP 控制	      | 绑定UDP ASSOCIATE 的 TCP 控制连接断开时，自动清理所有 UDP socket |
+|  IPv4/IPv6双栈 | 监听地址支持 127.0.0.1 / 0.0.0.0 / :: / ::1，自动适配 |
+|  HTTP 代理	  | 支持普通 HTTP（PIPE 转发）和 HTTPS（CONNECT 隧道），出口连接系统随机分配端口 |
+|  SOCKS5 TCP	  | 完整握手，支持 IPv4/IPv6/域名三种地址类型，自动 DNS 解析 |
+|  SOCKS5 UDP	  | 创建中继 socket 接收客户端 UDP 包，每发送 5 个包后重新绑定新端口（在 6811-6922 范围内随机选取），旧 socket 立即关闭 |
+|  TCP 控制	    | 绑定UDP ASSOCIATE 的 TCP 控制连接断开时，自动清理所有 UDP socket |
 
 
 
