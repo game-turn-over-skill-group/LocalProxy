@@ -39,7 +39,7 @@ const CONFIG = {
   port:         1080,
   udpPortRange: { min: 6811, max: 6922 },
   udpRotateAfter: 5,
-  debug:        false, //true / false
+  debug:        false,
 };
 
 process.argv.slice(2).forEach(arg => {

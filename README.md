@@ -19,7 +19,7 @@ curl --socks5 [::1]:1080 https://ipv6.baidu.com -v --tlsv1.2 --insecure
 ```bash
 node proxy-server.js
 ```
-默认：HTTP 代理 127.0.0.1:1080，SOCKS5 监听 127.0.0.1:1081
+默认：HTTP+SOCKS5 合并监听 127.0.0.1:1080
 
 
 命令行参数自定义

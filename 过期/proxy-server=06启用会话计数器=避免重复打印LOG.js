@@ -341,10 +341,8 @@ async function s5UdpAssoc(clientTcp) {
           log('info', `SOCKS5 UDP  ${clientTcp.remoteAddress} [#${sessionId}] → ${addr}:${dstPort}`);
         }
         if (pktCounts[family] > CONFIG.udpRotateAfter) {
-          createOutSockForFamily(family, (newPort, newAddr) => {
-            const dispNew = net.isIPv6(newAddr) ? `[${newAddr}]:${newPort}` : `${newAddr}:${newPort}`;
-            log('info', `SOCKS5 UDP  ${clientTcp.remoteAddress} [#${sessionId}] → [change ${dispNew}]`);
-          });
+          dbg(`UDP(v${family}) [#${sessionId}] rotate after ${pktCounts[family]} pkts`);
+          createOutSockForFamily(family);
         }
         const sock = outSocks[family];
         dbg(`UDP relay: sending via v${family} socket to ${addr}:${dstPort}`);
@@ -365,7 +363,7 @@ async function s5UdpAssoc(clientTcp) {
   });
 
   // outSock 收到回包时也加日志
-  function createOutSockForFamily(family, onReady) {
+  function createOutSockForFamily(family) {
     const old2 = outSocks[family];
     // 延迟关闭旧 socket（给在途回包留 2 秒缓冲，避免高并发下丢包）
     if (old2) { setTimeout(() => { try { old2.close(); } catch (_) {} }, 2000); }
@@ -396,7 +394,6 @@ async function s5UdpAssoc(clientTcp) {
     s.bind(p, bind, () => {
       const a = s.address();
       dbg(`UDP out(v${family}) → ${a.address}:${a.port}`);
-      if (onReady) onReady(a.port, a.address);
     });
 
     outSocks[family]  = s;
@@ -412,8 +409,7 @@ async function s5UdpAssoc(clientTcp) {
   relaySock.bind(relayPort, bindHost, () => {
     const a = relaySock.address();
     dbg(`SOCKS5 UDP relay → ${a.address}:${a.port}`);
-    const dispRelay = net.isIPv6(a.address) ? `[${a.address}]:${a.port}` : `${a.address}:${a.port}`;
-    log('info', `SOCKS5 UDP  ${clientTcp.remoteAddress} [#${sessionId}] → [relay ${dispRelay}]`);
+    log('info', `SOCKS5 UDP  ${clientTcp.remoteAddress} [#${sessionId}] → [relay ${a.address}:${a.port}]`);
     clientTcp.write(buildS5Reply(REP_OK, a.address, a.port));
   });
 
@@ -670,10 +666,6 @@ startAll();
 ['SIGINT', 'SIGTERM'].forEach(sig =>
   process.on(sig, () => {
     log('info', '关闭中...');
-    // 最多等 500ms 让 TCP 服务器优雅关闭，之后强制退出
-    // （UDP socket 和延迟定时器会阻止 Node 自然退出，必须强制）
-    const forceExit = setTimeout(() => process.exit(0), 500);
-    forceExit.unref();
     Promise.all(servers.map(s => new Promise(r => s.close(r)))).then(() => process.exit(0));
   })
 );
