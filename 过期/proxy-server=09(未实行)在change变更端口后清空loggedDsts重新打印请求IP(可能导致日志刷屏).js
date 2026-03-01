@@ -36,10 +36,10 @@ const CONFIG = {
   //   'dual'       同时监听 127.0.0.1 + ::1（默认，本机 IPv4+IPv6 均可连）
   //   'dual-all'   同时监听 0.0.0.0 + ::（局域网 IPv4+IPv6 均可连）
   host:         'dual',
-  port:         22,
+  port:         1080,
   udpPortRange: { min: 6811, max: 6922 },
   udpRotateAfter: 5,
-  debug:        false, //true / false
+  debug:        false,
 };
 
 process.argv.slice(2).forEach(arg => {
@@ -344,6 +344,8 @@ async function s5UdpAssoc(clientTcp) {
           createOutSockForFamily(family, (newPort, newAddr) => {
             const dispNew = net.isIPv6(newAddr) ? `[${newAddr}]:${newPort}` : `${newAddr}:${newPort}`;
             log('info', `SOCKS5 UDP  ${clientTcp.remoteAddress} [#${sessionId}] → [change ${dispNew}]`);
+            // 轮换后清空已打印目标集合，让新端口下的请求重新打印目标 IP
+            loggedDsts.clear();
           });
         }
         const sock = outSocks[family];
