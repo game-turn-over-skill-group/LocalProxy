@@ -8,14 +8,13 @@
  *  - HTTP 代理：CONNECT(HTTPS) + 普通 HTTP
  *  - SOCKS5：TCP CONNECT + UDP ASSOCIATE
  *  - SOCKS4/4a：TCP CONNECT（兼容）
- *  - UDP：每发送 N 个包后轮换本地绑定端口（范围 6811-6922），旧端口延迟关闭时间可配置
+ *  - UDP：每发送 N 个包后轮换本地绑定端口（范围 6811-6922）
  *
  * 启动：
  *   node proxy-server.js
  *   node proxy-server.js --host=0.0.0.0 --port=1080
  *   node proxy-server.js --host=:: --port=1080
  *   node proxy-server.js --udp-min=6811 --udp-max=6922 --udp-rotate=5
- *   node proxy-server.js --udp-stale-timeout=5000   # 旧 socket 等待回包的超时（毫秒）
  *   node proxy-server.js --debug   （显示每个连接的原始首字节）
  */
 
@@ -40,8 +39,7 @@ const CONFIG = {
   host:         'dual',
   port:         22,
   udpPortRange: { min: 6811, max: 6922 },
-  udpRotateAfter: 5,        // 每 5 个 UDP 数据包更换一次出口端口（从第6个包开始用新端口）
-  udpStaleTimeout: 5000,    // 旧出口 socket 延迟关闭时间（毫秒），默认 5 秒
+  udpRotateAfter: 5,
   debug:        false, //true / false
 };
 
@@ -49,14 +47,13 @@ process.argv.slice(2).forEach(arg => {
   const m = arg.match(/^--([^=]+)(?:=(.+))?$/);
   if (!m) return;
   const [, key, val] = m;
-  if (key === 'host')                CONFIG.host             = val;
-  if (key === 'port')                CONFIG.port             = parseInt(val);
-  if (key === 'udp-min')             CONFIG.udpPortRange.min = parseInt(val);
-  if (key === 'udp-max')             CONFIG.udpPortRange.max = parseInt(val);
-  if (key === 'udp-rotate')           CONFIG.udpRotateAfter   = parseInt(val);
-  if (key === 'udp-stale-timeout')    CONFIG.udpStaleTimeout  = parseInt(val);
-  if (key === 'debug')                CONFIG.debug            = true;
-  if (key === 'no-debug')             CONFIG.debug            = false;
+  if (key === 'host')       CONFIG.host             = val;
+  if (key === 'port')       CONFIG.port             = parseInt(val);
+  if (key === 'udp-min')    CONFIG.udpPortRange.min = parseInt(val);
+  if (key === 'udp-max')    CONFIG.udpPortRange.max = parseInt(val);
+  if (key === 'udp-rotate') CONFIG.udpRotateAfter   = parseInt(val);
+  if (key === 'debug')      CONFIG.debug            = true;
+  if (key === 'no-debug')   CONFIG.debug            = false;
 });
 
 // 将 host 配置展开成实际要监听的地址列表
@@ -319,6 +316,8 @@ async function s5UdpAssoc(clientTcp) {
   // outSocks: { 4: socket|null, 6: socket|null }
   const outSocks   = { 4: null, 6: null };
   const pktCounts  = { 4: 0,    6: 0    };
+  // 记录本会话已打印过 INFO 的目标，避免轮换后重复打印
+  const loggedDsts = new Set();
 
   relaySock.on('error', err => log('error', 'UDP relay:', err.message));
   relaySock.on('message', (msg, rinfo) => {
@@ -332,27 +331,13 @@ async function s5UdpAssoc(clientTcp) {
       const data = msg.slice(offset);
       dbg(`UDP relay: client→${dstHost}:${dstPort} (${data.length}B)`);
 
-      // doSend 改为异步函数，以便等待新 socket 就绪
-      const doSend = async (addr) => {
+      // 在 s5UdpAssoc 函数内，删除 loggedDsts 定义
+      // const loggedDsts = new Set();   // 已移除
+      // 修改 doSend 函数
+      const doSend = (addr) => {
         const family = net.isIPv6(addr) ? 6 : 4; // 根据目标地址决定用 IPv4 还是 IPv6 出口 socket
-        let sock = outSocks[family];
-
-        // 检查是否需要轮换出口端口
-        if (pktCounts[family] >= CONFIG.udpRotateAfter) {
-          // 需要轮换：等待新 socket 创建完成
-          await new Promise(resolve => {
-            createOutSockForFamily(family, (newPort, newAddr) => {
-              resolve();
-            });
-          });
-          // 新 socket 已就绪，重新获取
-          sock = outSocks[family];
-          // 当前包是新 socket 的第一个包，计数器置为1
-          pktCounts[family] = 1;
-        } else {
-          pktCounts[family]++;
-        }
-
+        pktCounts[family]++;
+        const sock = outSocks[family];
         // 获取本地地址和端口（try-catch 防止 socket 未绑定完成时出错）
         let localAddrStr = '';
         try {
@@ -361,11 +346,13 @@ async function s5UdpAssoc(clientTcp) {
         } catch (e) {
           localAddrStr = '?.?.?.?:?'; // 极少数情况下的回退
         }
-
         // 每次发送都打印日志，格式：目标IP:端口 (本地监听地址:端口)
         log('info', `SOCKS5 UDP  ${clientTcp.remoteAddress} [#${sessionId}] → ${addr}:${dstPort} (${localAddrStr})`);
-
-        //dbg(`UDP relay: sending via v${family} socket to ${addr}:${dstPort}`); // 调试信息（可选择保留）
+        // 触发出口端口轮换（不再传递 onReady 回调）
+        if (pktCounts[family] > CONFIG.udpRotateAfter) {
+          createOutSockForFamily(family);
+        }
+        //dbg(`UDP relay: sending via v${family} socket to ${addr}:${dstPort}`);
         sock.send(data, dstPort, addr, err => {
           if (err) log('error', `UDP send(v${family}):`, err.message);
           else dbg(`UDP sent OK → ${addr}:${dstPort}`);
@@ -382,15 +369,11 @@ async function s5UdpAssoc(clientTcp) {
     } catch (e) { log('error', 'UDP parse:', e.message); }
   });
 
-  // 创建出口 socket（修改版：绑定完成后再赋值给 outSocks，并调用 onReady）
+  // outSock 收到回包时也加日志
   function createOutSockForFamily(family, onReady) {
     const old2 = outSocks[family];
-    // 延迟关闭旧 socket（给在途回包留缓冲），使用可配置的超时
-    if (old2) {
-      setTimeout(() => {
-        try { old2.close(); } catch (_) {}
-      }, CONFIG.udpStaleTimeout);
-    }
+    // 延迟关闭旧 socket（给在途回包留 2 秒缓冲，避免高并发下丢包）
+    if (old2) { setTimeout(() => { try { old2.close(); } catch (_) {} }, 2000); }
 
     const type = family === 6 ? 'udp6' : 'udp4';
     const bind = family === 6 ? '::'   : '0.0.0.0';
@@ -415,17 +398,15 @@ async function s5UdpAssoc(clientTcp) {
     if (old2) old2.removeAllListeners('message');
     if (old2) old2.on('message', onMessage);
 
-    // 绑定，成功后赋值给 outSocks 并调用 onReady
     s.bind(p, bind, () => {
       const a = s.address();
       dbg(`UDP out(v${family}) → ${a.address}:${a.port}`);
-      // 现在新 socket 才正式生效
-      outSocks[family] = s;
-      pktCounts[family] = 0; // 重置计数器（新 socket 从0开始）
-      if (onReady) onReady(a.port, a.address);
+      //if (onReady) onReady(a.port, a.address); //打印 change 日志
     });
 
-    // 注意：此处不立即设置 outSocks[family] = s，仍用旧 socket 直到绑定完成
+    outSocks[family]  = s;
+    pktCounts[family] = 0;
+    return s;
   }
 
   // 预先创建两个出口 socket（IPv4 + IPv6）
@@ -670,8 +651,7 @@ async function startAll() {
 
   log('info', '─'.repeat(60));
   log('info', `  UDP 范围 : ${CONFIG.udpPortRange.min}-${CONFIG.udpPortRange.max}`);
-  log('info', `  UDP 轮换 : 每 ${CONFIG.udpRotateAfter} 包换出口端口（第${CONFIG.udpRotateAfter+1}个包用新端口）`);
-  log('info', `  旧端口延迟关闭 : ${CONFIG.udpStaleTimeout} ms`);
+  log('info', `  UDP 轮换 : 每 ${CONFIG.udpRotateAfter} 包换出口端口`);
   log('info', `  调试模式 : ${CONFIG.debug ? '开启' : '关闭 (--debug 开启)'}`);
   log('info', '─'.repeat(60));
   const ex4 = '127.0.0.1', ex6 = '[::1]';
@@ -685,7 +665,7 @@ async function startAll() {
   log('info', `  --host=::1         仅 IPv6 本机`);
   log('info', `  --host=0.0.0.0     所有 IPv4 接口`);
   log('info', `  --host=::          所有 IPv6 接口`);
-  log('info', `  --port=1080  --udp-min=6811  --udp-max=6922  --udp-rotate=5  --udp-stale-timeout=5000`);
+  log('info', `  --port=1080  --udp-min=6811  --udp-max=6922  --udp-rotate=5`);
   log('info', '═'.repeat(60));
   console.log('');
 }

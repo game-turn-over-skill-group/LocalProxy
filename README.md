@@ -51,7 +51,7 @@ node proxy-server.js --udp-min=6811 --udp-max=6922 --udp-rotate=5
 
 
 ##### 项目发起人：rer
-##### 项目协作者：豆包、claude
+##### 项目协作者：豆包、claude、deepseek
 
 
 
