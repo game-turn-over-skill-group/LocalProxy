@@ -1,6 +1,6 @@
 
 
-该项目[目前]由deepseek独家赞助播出
+
 
 --------------------------------------------------
 
@@ -238,13 +238,71 @@ relay socket 长期存在，用于维持会话。
 4、保留所有原有注释，并添加了少量必要的说明。
 
 
+--------------------------------------------------（Claude）
+
+
+//修复socks连接断开还继续发包导致的异常崩溃
+
+看看这个崩溃原因是什么？
+[2026-03-23 10:06:20.784] UNCAUGHT EXCEPTION: Error [ERR_SOCKET_DGRAM_NOT_RUNNING]: Not running
+    at healthCheck (node:dgram:967:11)
+    at Socket.send (node:dgram:687:3)
+    at Socket.onMessage (E:\Github\LocalProxy\proxy-server.js:406:17)
+    at Socket.emit (node:events:508:28)
+    at UDP.onMessage [as onmessage] (node:dgram:993:8)
+
+----------------
+
+崩溃原因已经很清楚了，是一个竞态条件（Race Condition），根源在 UDP 回包路径上。
+
+崩溃根本原因调用链：
+onMessage (line 406) 
+  → relaySock.send(...)
+    → ERR_SOCKET_DGRAM_NOT_RUNNING发生的时序：
+外部 UDP 服务器发了一个回包，触发了 outSocks 的 onMessage（line 401）
+onMessage 尝试通过 relaySock.send(...) 将包转发回客户端（line 406）
+但此时 relaySock 已经被关闭了——因为 TCP 连接断开触发了 cleanup()（line 444），而 cleanup 里调用了 relaySock.close()
+结果：对一个已关闭的 socket 调用 .send()，Node.js 内部抛出 ERR_SOCKET_DGRAM_NOT_RUNNING，
+这个错误从 relaySock.send 的回调之外抛出，无法被 try-catch 捕获，直接成为 uncaughtException。
+
+总结
+项		内容
+错误类型	竞态条件（Race Condition）
+触发场景	TCP 连接断开后，延迟关闭的旧 outSock 仍收到 UDP 回包，尝试向已关闭的 relaySock 发送
+直接原因	对已 .close() 的 dgram socket 调用 .send()
+修复方式	用 relayClosed 标志位在 onMessage 里做守卫检查
+
+修复完成，共改动了 3 处，全部在 s5UdpAssoc 函数内：
+改动 1 — 新增 relayClosed 标志位
+jslet relayClosed = false;
+在 relaySock 和 outSocks 声明附近加入，作为整个会话的关闭状态守卫。
+改动 2 — onMessage 入口处加守卫
+
+// 修复前
+if (!clientUdpAddr) return;
+
+// 修复后
+if (relayClosed || !clientUdpAddr) return;
+TCP 断开后，延迟关闭期内的旧 outSock 收到回包时，直接在这里丢弃，不再调用已关闭的 relaySock.send()。
+改动 3 — cleanup 先置标志再关 socket
+
+// 修复前
+const cleanup = () => {
+  try { relaySock.close(); } catch (_) {}
+  ...
+};
+
+// 修复后
+const cleanup = () => {
+  relayClosed = true;  // ← 先置标志
+  try { relaySock.close(); } catch (_) {}
+  ...
+};
+确保标志在 socket 实际关闭之前就已经设置，不留任何时序空隙。
+另外顺手把 relaySock 的 error 事件也加了 ERR_SOCKET_DGRAM_NOT_RUNNING 过滤（和 outSock 保持一致），避免万一有漏网的情况还打出噪音日志。
+
+
 --------------------------------------------------
-
-
-
-
-
-
 
 
 
